@@ -1,0 +1,46 @@
+# Copy this file to config.yaml and adjust before running.
+# config.yaml is gitignored so real API keys never get committed.
+
+matching:
+  # Records scoring at or above this on the fuzzy name+address match get
+  # auto-merged without ever calling Claude. Below auto_merge_threshold but
+  # above review_threshold, Claude is asked to make the judgment call.
+  auto_merge_threshold: 92
+  review_threshold: 72
+  # Cap on how many ambiguous pairs get sent to Claude in one run, so a
+  # messy database can't generate a surprise bill. Extra ambiguous pairs
+  # are left unmerged and flagged in the report for manual review instead.
+  max_claude_calls: 250
+
+llm:
+  # If false (or ANTHROPIC_API_KEY is unset), ambiguous pairs are resolved
+  # with a deterministic fallback rule instead of Claude. The pipeline
+  # always runs end-to-end either way.
+  enabled: true
+  model: claude-sonnet-4-5
+
+enrichment:
+  # Cross-record fill (copying a phone/email from a duplicate onto a
+  # sibling record that's missing it) always runs and is always free.
+  # This section controls the OPTIONAL paid lookup step for whatever is
+  # still missing afterward.
+  provider: none        # none | mock | forewarn
+  max_lookups_per_run: 200
+  # Forewarn's technical API docs, auth method, and request/response shape
+  # are not publicly published as of this build (Sept 2026) -- "API and
+  # custom integrations available" is listed on forewarn.com/product but
+  # requires reaching out to a Forewarn/MLS account rep for credentials
+  # and a spec. See dbcleanup/enrich/forewarn_provider.py for the stub
+  # and TODOs to fill in once you have that documentation. Also confirm
+  # with your rep that automated bulk lookups for contact-list enrichment
+  # (vs. one-off pre-showing safety checks) is a permitted use of your
+  # subscription -- Forewarn returns identity/criminal/financial records,
+  # which sit in FCRA-adjacent territory.
+  forewarn:
+    base_url: "https://api.forewarn.com"   # placeholder -- confirm with Forewarn
+    api_key_env: FOREWARN_API_KEY
+
+output:
+  clean_csv: output/cleaned_contacts.csv
+  report: output/data_quality_report.md
+  report_json: output/data_quality_report.json
