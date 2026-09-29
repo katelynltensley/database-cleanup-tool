@@ -36,6 +36,7 @@ COLUMN_ALIASES: dict[str, list[str]] = {
     ],
     "address": [
         "mailing address", "address", "street address", "address 1", "street",
+        "address line 1",
     ],
     "city": ["city"],
     "state": ["state", "st"],
@@ -105,16 +106,53 @@ def _build_header_map(columns: list[str]) -> dict[str, str]:
     return header_map
 
 
+def _read_table(path: Path, header_row: int = 0) -> pd.DataFrame:
+    if path.suffix.lower() in (".xlsx", ".xls"):
+        return pd.read_excel(path, dtype=str, header=header_row)
+    return pd.read_csv(
+        path, dtype=str, keep_default_na=False, na_filter=False, header=header_row
+    )
+
+
+def _multi_column_values(columns: list[str], keyword: str) -> list[str]:
+    """All column names containing `keyword`, left-to-right as they appear in
+    the source file. CRM exports that break phone/email into several typed
+    columns (e.g. KW Command's "Primary cell phone", "Primary work phone",
+    "Others mobile phone", ...) consistently list the most-likely-current
+    numbers/addresses before older/secondary ones, so column order alone is
+    a reasonable priority ranking without hardcoding every CRM's field names.
+    """
+    return [c for c in columns if keyword in c.strip().lower()]
+
+
 def load_contacts(path: str | Path) -> list[Contact]:
     """Load a CSV or Excel export into canonical Contact records."""
     path = Path(path)
-    if path.suffix.lower() in (".xlsx", ".xls"):
-        df = pd.read_excel(path, dtype=str)
-    else:
-        df = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False)
-
+    df = _read_table(path, header_row=0)
     header_map = _build_header_map(list(df.columns))
-    unmapped = [c for c in df.columns if c not in header_map]
+
+    # Some CRM exports (KW Command among them) ship a two-row header: a row
+    # of section group labels ("PRIMARY ADDRESS", "Key Dates", mostly blank)
+    # followed by the actual field names. If the first row didn't give us a
+    # name field, assume it was a group-label row and re-read using the
+    # second row as the real header instead.
+    if "first_name" not in header_map.values() and "last_name" not in header_map.values():
+        try:
+            retry_df = _read_table(path, header_row=1)
+        except (pd.errors.ParserError, IndexError):
+            retry_df = None
+        if retry_df is not None:
+            retry_header_map = _build_header_map(list(retry_df.columns))
+            if (
+                "first_name" in retry_header_map.values()
+                or "last_name" in retry_header_map.values()
+            ):
+                df = retry_df
+                header_map = retry_header_map
+
+    columns = list(df.columns)
+    phone_cols = _multi_column_values(columns, "phone")
+    email_cols = _multi_column_values(columns, "email")
 
     contacts: list[Contact] = []
     for idx, row in df.iterrows():
@@ -123,6 +161,31 @@ def load_contacts(path: str | Path) -> list[Contact]:
         for source_col, canonical in header_map.items():
             val = raw.get(source_col, "")
             values[canonical] = "" if pd.isna(val) else str(val).strip()
+
+        # Override phone/email with the multi-column consolidation: several
+        # differently-typed phone/email columns collapse into one primary
+        # (+ one secondary phone), taking the first non-empty, left-to-right.
+        if phone_cols:
+            found: list[str] = []
+            for col in phone_cols:
+                val = raw.get(col, "")
+                val = "" if pd.isna(val) else str(val).strip()
+                if val and val not in found:
+                    found.append(val)
+            values["phone"] = found[0] if found else ""
+            values["secondary_phone"] = found[1] if len(found) > 1 else values.get(
+                "secondary_phone", ""
+            )
+        if email_cols:
+            for col in email_cols:
+                val = raw.get(col, "")
+                val = "" if pd.isna(val) else str(val).strip()
+                if val:
+                    values["email"] = val
+                    break
+            else:
+                values["email"] = ""
+
         contacts.append(Contact(row_id=idx, raw=raw, **values))
 
     return contacts
